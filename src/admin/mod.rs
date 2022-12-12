@@ -424,11 +424,6 @@ async fn handle_logging(req: Request<Body>) -> Response<Body> {
 }
 
 fn list_loggers() -> Response<Body> {
-    warn!("testing warn");
-    info!("testing info");
-    error!("testing error");
-    trace!("testing trace");
-    debug!("testing debug");
 
     if let Some(loglevel) = telemetry::get_current_loglevel() {
         Response::builder()
