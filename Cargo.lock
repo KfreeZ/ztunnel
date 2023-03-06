@@ -2865,6 +2865,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "boring",
+ "boring-sys",
  "byteorder",
  "bytes",
  "console-subscriber",
