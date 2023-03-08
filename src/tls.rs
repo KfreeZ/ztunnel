@@ -13,10 +13,12 @@
 // limitations under the License.
 
 pub mod boring;
+pub mod qat;
 
 use std::sync::Arc;
 
 pub use crate::tls::boring::*;
+pub use crate::tls::qat::*;
 use ::boring::error::ErrorStack;
 use hyper::http::uri::InvalidUri;
 

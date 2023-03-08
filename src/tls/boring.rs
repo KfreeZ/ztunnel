@@ -33,10 +33,6 @@ use boring::x509::extension::{
 };
 use boring::x509::verify::X509CheckFlags;
 use boring::x509::{self, X509StoreContext, X509StoreContextRef, X509VerifyResult};
-use boring_sys as ffi;
-use boring_sys::ssl_private_key_method_st;
-use boring_sys::ssl_private_key_result_t;
-use boring_sys::SSL;
 use hyper::client::ResponseFuture;
 use hyper::server::conn::AddrStream;
 use hyper::{Request, Uri};
@@ -47,6 +43,8 @@ use tracing::{error, info};
 
 use crate::config::RootCert;
 use crate::identity::{self, Identity};
+
+use crate::tls::QatPrivateKeyProvider;
 
 use super::Error;
 
@@ -305,73 +303,24 @@ impl Certs {
         }
         conn.check_private_key()?;
 
+/*zkf start here */
         //private key methods
         //SSL_CTX_set_private_key_method to reigster the callback
-        Self::set_private_key_method(conn);
+        QatPrivateKeyProvider::set_private_key_method(conn.as_ptr());
     
         //SSL_set_data to open a section in QAT for this SSL
-        conn.set_ex_data(SslContext::new_ex_index().unwrap(), Self::qat_connection());
+        conn.set_ex_data(SslContext::new_ex_index().unwrap(), QatPrivateKeyProvider::qat_connection());
+/*zkf end here */
 
         // by default, allow boringssl to do standard validation
         conn.set_verify_callback(Self::verify_mode(), Verifier::None.callback());
 
         Ok(())
     }
-
-    //TODO this may be moved to somewhere else
-    fn set_private_key_method(conn: &mut SslContextBuilder) {
-        let key_method = ssl_private_key_method_st {
-            sign: Some(my_sign),
-            decrypt: Some(my_decrypt),
-            complete: Some(my_complete),
-            // set other function pointers
-        };
-
-        unsafe {
-            ffi::SSL_CTX_set_private_key_method(conn.as_ptr(), &key_method);
-        }
-    }
-
-    fn qat_connection() {
-
-    }
 }
 
-// define your own function pointers
-unsafe extern "C" fn my_sign(
-    _ctx: *mut SSL,
-    _out: *mut u8,
-    _out_len: *mut usize,
-    _max_out: usize,
-    _algo: u16,
-    _in_: *const u8,
-    _in_len: usize,
-) -> ssl_private_key_result_t {
-    // implement your own signing function
-    return ssl_private_key_result_t(2);
-}
 
-unsafe extern "C" fn my_decrypt(
-    _ctx: *mut SSL,
-    _out: *mut u8,
-    _out_len: *mut usize,
-    _max_out: usize,
-    _in_: *const u8,
-    _in_len: usize,
-) -> ssl_private_key_result_t {
-    // implement your own decryption function
-    return ssl_private_key_result_t(2);
-}
 
-unsafe extern "C" fn my_complete(
-    _ctx: *mut SSL,
-    _out: *mut u8,
-    _out_len: *mut usize,
-    _max_out: usize,
-) -> ssl_private_key_result_t {
-    // implement your own finish function
-    return ssl_private_key_result_t(2);
-}
 
 enum Verifier {
     // Does not verify an individual identity.
