@@ -26,7 +26,7 @@ use boring::hash::MessageDigest;
 use boring::nid::Nid;
 use boring::pkey;
 use boring::pkey::{PKey, Private};
-use boring::ssl::{self, SslContextBuilder};
+use boring::ssl::{self, SslContextBuilder, SslContext};
 use boring::stack::Stack;
 use boring::x509::extension::{
     AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
@@ -305,13 +305,21 @@ impl Certs {
         }
         conn.check_private_key()?;
 
+        //private key methods
+        //SSL_CTX_set_private_key_method to reigster the callback
+        Self::set_private_key_method(conn);
+    
+        //SSL_set_data to open a section in QAT for this SSL
+        conn.set_ex_data(SslContext::new_ex_index().unwrap(), Self::qat_connection());
+
         // by default, allow boringssl to do standard validation
         conn.set_verify_callback(Self::verify_mode(), Verifier::None.callback());
 
         Ok(())
     }
 
-    pub fn set_private_key_method(conn: &mut SslContextBuilder) {
+    //TODO this may be moved to somewhere else
+    fn set_private_key_method(conn: &mut SslContextBuilder) {
         let key_method = ssl_private_key_method_st {
             sign: Some(my_sign),
             decrypt: Some(my_decrypt),
@@ -322,6 +330,10 @@ impl Certs {
         unsafe {
             ffi::SSL_CTX_set_private_key_method(conn.as_ptr(), &key_method);
         }
+    }
+
+    fn qat_connection() {
+
     }
 }
 

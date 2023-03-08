@@ -114,6 +114,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
+name = "autotools"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aef8da1805e028a172334c3b680f93e71126f2327622faef2ec3d893c0a4ad77"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "axum"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -206,6 +215,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.64.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4243e6031260db77ede97ad86c27e501d646a27ab57b59a574f725d98ab1fb4"
+dependencies = [
+ "bitflags",
+ "cexpr",
+ "clang-sys",
+ "lazy_static",
+ "lazycell",
+ "peeking_take_while",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex",
+ "syn",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -230,7 +259,7 @@ version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7663d3069437a5ccdb2b5f4f481c8b80446daea10fa8503844e89ac65fcdc363"
 dependencies = [
- "bindgen",
+ "bindgen 0.60.1",
  "cmake",
 ]
 
@@ -1160,6 +1189,15 @@ checksum = "b67380fd3b2fbe7527a606e18729d21c6f3951633d0500574c4dc22d2d638b9f"
 dependencies = [
  "cfg-if",
  "winapi",
+]
+
+[[package]]
+name = "libqat-sys"
+version = "0.1.0"
+source = "git+https://github.com/intel-sandbox/libqat-sys.git#8247cc5d9a9b912d6b9dc47eaf3efab4db72b569"
+dependencies = [
+ "autotools",
+ "bindgen 0.64.0",
 ]
 
 [[package]]
@@ -2881,6 +2919,7 @@ dependencies = [
  "ipnet",
  "itertools",
  "libc",
+ "libqat-sys",
  "log",
  "matches",
  "netns-rs",
