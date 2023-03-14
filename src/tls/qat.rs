@@ -16,6 +16,15 @@ pub struct QatPrivateKeyMethodProviderConfig {
     pKey: Vec<u8>,
     poll_delay: tokio::time::Duration,
 }
+
+impl QatPrivateKeyMethodProviderConfig {
+    pub fn new() -> QatPrivateKeyMethodProviderConfig {
+        QatPrivateKeyMethodProviderConfig {
+            pKey: vec![1], 
+            poll_delay: tokio::time::Duration::from_secs(1),
+        }
+    }
+}
 pub struct QatPrivateKeyMethodProvider {
     qat_manager: QatManager,
     qat_section: QatSection,
@@ -24,7 +33,7 @@ pub struct QatPrivateKeyMethodProvider {
 }
 
 impl QatPrivateKeyMethodProvider {
-    fn new(conf: QatPrivateKeyMethodProviderConfig) -> QatPrivateKeyMethodProvider {
+    pub fn new(conf: QatPrivateKeyMethodProviderConfig) -> QatPrivateKeyMethodProvider {
         QatPrivateKeyMethodProvider {
             qat_manager: *QAT_MANAGER_SINGLETON,
             qat_section: QatSection::new(conf.poll_delay),
@@ -136,10 +145,7 @@ impl QatSection {
             next_handle_: 0,
         }
     }
-    async fn qat_poll(idx: usize, poll_delay: tokio::time::Duration) {
-        libqat_sys::icp_sal_CyPollInstance(self.qat_handles_[idx].get_handle(), 0);
-        sleep(poll_delay);
-    }
+
     fn start_section(&mut self, poll_delay: Duration) -> bool {
 
         let mut num_instances:u16 = 0;
@@ -163,42 +169,38 @@ impl QatSection {
             // until qatlib implements event-based notifications when the QAT operation
             // is ready.
             let qat_handle = Arc::new(Mutex::new(self.qat_handles_[i as usize]));
-
-            let thread = tokio::spawn(async move {  Self::poll_task(qat_handle, poll_delay).await});
-            // let thread = tokio::spawn(async { 
-            //     Self::qat_poll(0, poll_delay);
-            // });
-            self.qat_handles_[i as usize].polling_thread_ = Some(thread);
+            let cpa_handle= Arc::new(Mutex::new(cpa_instances[i as usize]));
+            let thread = std::thread::spawn( move || { //cannot use tokio::spawn here
+                Self::poll_task(qat_handle, poll_delay)
+            });
+            // self.qat_handles_[i as usize].polling_thread_ = Some(thread);
         }
         return true;
     }
 
 
-    async fn poll_task(
+    fn poll_task(
         handle: Arc<Mutex<QatHandle>>,
         delay: Duration,
     ) {
-        loop {
-            {
+            loop {
+                {
+                    let handle = handle.lock().unwrap();
+                    // handle.poll_lock_.lock().unwrap();
+                    if handle.is_done() {
+                        return;
+                    }
+                    if !handle.has_users() {
+                        // handle.qat_thread_cond_.notified().await;
+                    }
+                }
                 let handle = handle.lock().unwrap();
                 // handle.poll_lock_.lock().unwrap();
-                if handle.is_done() {
-                    return;
-                }
-                if !handle.has_users() {
-                    handle.qat_thread_cond_.notified().await;
-                }
-            }
-            let handle = handle.lock().unwrap();
-            // handle.poll_lock_.lock().unwrap();
-            libqat_sys::icp_sal_CyPollInstance(handle.get_handle(), 0);    
-            sleep(delay).await;
+                libqat_sys::icp_sal_CyPollInstance(handle.get_handle(), 0);    
+                sleep(delay);
         }
+
     }
-
-
-    
-    
 }
 
 
@@ -229,11 +231,14 @@ impl QatConnection {
 
 
 }
+
+
+unsafe impl Send for QatHandle {}
 /**
  * Represents a QAT hardware instance.
  */
 struct QatHandle {
-    // cpq_handle_: libqat_sys::CpaInstanceHandle,
+    cpq_handle_: libqat_sys::CpaInstanceHandle,
     info_: libqat_sys::CpaInstanceInfo2,
     job_is_done: bool,
     polling_thread_: Option<tokio::task::JoinHandle<()>>,
@@ -243,8 +248,6 @@ struct QatHandle {
     //libqat_ 
 }
 
-unsafe impl Send for QatHandle {}
-unsafe impl Sync for QatHandle {}
 impl QatHandle {
     pub fn is_done(&self) -> bool {
         self.job_is_done
@@ -258,7 +261,7 @@ impl QatHandle {
                 return false;
             }
 
-            status = libqat_sys::cpaCyInstanceGetInfo2(self.cpq_handle_, self.info_ as *mut _);
+            status = libqat_sys::cpaCyInstanceGetInfo2(self.cpq_handle_, &mut self.info_ as *mut _);
 
             if status != libqat_sys::CPA_STATUS_SUCCESS as i32 {
                 return false;

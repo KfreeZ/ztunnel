@@ -45,6 +45,7 @@ use crate::config::RootCert;
 use crate::identity::{self, Identity};
 
 use crate::tls::QatPrivateKeyMethodProvider;
+use crate::tls::QatPrivateKeyMethodProviderConfig;
 
 use super::Error;
 
@@ -306,7 +307,9 @@ impl Certs {
 /*zkf start here */
         //private key methods
         //SSL_CTX_set_private_key_method to reigster the callback
-        QatPrivateKeyMethodProvider::set_private_key_method(conn.as_ptr());
+        let qpkmp_conf = QatPrivateKeyMethodProviderConfig::new();
+        let mut qpkmp = QatPrivateKeyMethodProvider::new(qpkmp_conf);
+        qpkmp.set_private_key_method(conn.as_ptr());
     
         //SSL_set_data to open a section in QAT for this SSL
         conn.set_ex_data(SslContext::new_ex_index().unwrap(), QatPrivateKeyMethodProvider::qat_connection());
