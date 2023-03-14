@@ -9,6 +9,7 @@ use tracing::{debug, info};
 use tokio::task;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::Notify;
 
 
 pub struct QatPrivateKeyMethodProviderConfig {
@@ -121,11 +122,11 @@ impl Drop for QatManager {
  * QatSection represents a section definition in QAT configuration. 
  * Its main purpose is to initalize HW and load balance operations to the QAT handles.
  */
-    struct QatSection {
-        qat_handles_: Vec<QatHandle>,
-        num_instances_: libqat_sys::Cpa16U,
-        next_handle_: i32,
-    }
+struct QatSection {
+    qat_handles_: Vec<QatHandle>,
+    num_instances_: libqat_sys::Cpa16U,
+    next_handle_: i32,
+}
 
 impl QatSection {
     fn new(poll_delay: Duration) -> QatSection {
@@ -161,12 +162,12 @@ impl QatSection {
             // Every handle has a polling thread associated with it. This is needed
             // until qatlib implements event-based notifications when the QAT operation
             // is ready.
-            let qat_handle = &self.qat_handles_[i as usize];
+            let qat_handle = Arc::new(Mutex::new(self.qat_handles_[i as usize]));
 
-            // let thread = tokio::spawn(async { Self::qat_poll(qat_handle.clone(), poll_delay).await});
-            let thread = tokio::spawn(async { 
-                Self::qat_poll(0, poll_delay);
-            });
+            let thread = tokio::spawn(async move {  Self::poll_task(qat_handle, poll_delay).await});
+            // let thread = tokio::spawn(async { 
+            //     Self::qat_poll(0, poll_delay);
+            // });
             self.qat_handles_[i as usize].polling_thread_ = Some(thread);
         }
         return true;
@@ -176,26 +177,27 @@ impl QatSection {
     async fn poll_task(
         handle: Arc<Mutex<QatHandle>>,
         delay: Duration,
-        sender: Sender<()>,
     ) {
         loop {
             {
-                let mut handle = handle.lock().unwrap();
+                let handle = handle.lock().unwrap();
+                // handle.poll_lock_.lock().unwrap();
                 if handle.is_done() {
                     return;
                 }
                 if !handle.has_users() {
-                    handle.wait_for_users().await;
+                    handle.qat_thread_cond_.notified().await;
                 }
             }
-    
-            let mut handle = handle.lock().unwrap();
-            handle.poll_instance();
-    
+            let handle = handle.lock().unwrap();
+            // handle.poll_lock_.lock().unwrap();
+            libqat_sys::icp_sal_CyPollInstance(handle.get_handle(), 0);    
             sleep(delay).await;
-            let _ = sender.send(()).await; // Notify that the task has completed a cycle
         }
     }
+
+
+    
     
 }
 
@@ -231,15 +233,20 @@ impl QatConnection {
  * Represents a QAT hardware instance.
  */
 struct QatHandle {
-    cpq_handle_: libqat_sys::CpaInstanceHandle,
+    // cpq_handle_: libqat_sys::CpaInstanceHandle,
     info_: libqat_sys::CpaInstanceInfo2,
     job_is_done: bool,
     polling_thread_: Option<tokio::task::JoinHandle<()>>,
+    poll_lock_: Arc<Mutex<u32>>,
+    qat_thread_cond_: Arc<Notify>,
+    users_: u32,
     //libqat_ 
 }
 
+unsafe impl Send for QatHandle {}
+unsafe impl Sync for QatHandle {}
 impl QatHandle {
-    pub fn job_is_done(&self) -> bool {
+    pub fn is_done(&self) -> bool {
         self.job_is_done
     }
 
@@ -270,6 +277,25 @@ impl QatHandle {
     pub fn get_handle(&self) -> libqat_sys::CpaInstanceHandle {
         self.cpq_handle_
     }
+
+    fn has_users (&self) -> bool {
+        self.users_ > 0
+    }
+
+    fn add_user(&self) {
+        self.users_ += 1;
+    }
+
+    fn remove_user(&self) {
+        assert!(self.users_ > 0);
+        self.users_ -= 1;
+    }
+
+    fn get_node_affinity(&self) -> u32{
+        self.info_.nodeAffinity
+    }
+
+
 }
 
 
