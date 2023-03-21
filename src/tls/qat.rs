@@ -1,6 +1,7 @@
 use boring_sys;
 use boring_sys::ssl_private_key_method_st;
 use boring_sys::ssl_private_key_result_t;
+use boring_sys::ssl_private_key_failure;
 use boring_sys::SSL;
 use libqat_sys;
 use tokio::time::{sleep, Duration};
@@ -79,8 +80,14 @@ impl QatPrivateKeyMethodProvider {
         _in_: *const u8,
         _in_len: usize,
     ) -> ssl_private_key_result_t {
+        if _ctx.is_null() {
+            return ssl_private_key_result_t::ssl_private_key_failure;
+        }
+
+        
         // implement your own decryption function
-        return ssl_private_key_result_t(2);
+
+        return ssl_private_key_result_t::ssl_private_key_success;
     }
 
     unsafe extern "C" fn my_complete(
@@ -169,7 +176,6 @@ impl QatSection {
             // until qatlib implements event-based notifications when the QAT operation
             // is ready.
             let qat_handle = Arc::new(Mutex::new(self.qat_handles_[i as usize]));
-            let cpa_handle= Arc::new(Mutex::new(cpa_instances[i as usize]));
             let thread = std::thread::spawn( move || { //cannot use tokio::spawn here
                 Self::poll_task(qat_handle, poll_delay)
             });
@@ -196,7 +202,9 @@ impl QatSection {
                 }
                 let handle = handle.lock().unwrap();
                 // handle.poll_lock_.lock().unwrap();
-                libqat_sys::icp_sal_CyPollInstance(handle.get_handle(), 0);    
+                unsafe {
+                    libqat_sys::icp_sal_CyPollInstance(handle.get_handle(), 0);    
+                }
                 sleep(delay);
         }
 
@@ -219,16 +227,6 @@ impl QatConnection {
     pub fn get_private_key(&self) -> boring_sys::EVP_PKEY {
         self.private_key
     }
-
-    pub fn register_private_key_methods() {
-        //register PKM to ssl context via set_ex_data
-    }
-
-    pub fn unregister_private_key_methodss() {
-        //un-register PKM to ssl context via set_ex_data
-    }
-
-
 
 }
 
