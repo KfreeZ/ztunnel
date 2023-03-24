@@ -19,23 +19,24 @@ use std::str::FromStr;
 use std::task::Poll;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use boring::asn1::Asn1Time;
-use boring::bn::BigNum;
-use boring::ec::{EcGroup, EcKey};
-use boring::hash::MessageDigest;
-use boring::nid::Nid;
-use boring::pkey;
-use boring::pkey::{PKey, Private};
-use boring::ssl::{self, SslContextBuilder};
-use boring::stack::Stack;
-use boring::x509::extension::{
-    AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
-};
-use boring::x509::verify::X509CheckFlags;
-use boring::x509::{self, X509StoreContext, X509StoreContextRef, X509VerifyResult};
 use hyper::client::ResponseFuture;
 use hyper::server::conn::AddrStream;
 use hyper::{Request, Uri};
+use openssl::asn1::Asn1Time;
+use openssl::bn::BigNum;
+use openssl::ec::{EcGroup, EcKey};
+use openssl::hash::MessageDigest;
+use openssl::nid::Nid;
+use openssl::pkey;
+use openssl::version::*;
+use openssl::pkey::{PKey, Private};
+use openssl::ssl::{self, Ssl, SslContextBuilder};
+use openssl::stack::Stack;
+use openssl::x509::extension::{
+    AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
+};
+use openssl::x509::verify::X509CheckFlags;
+use openssl::x509::{self, X509Ref, X509StoreContext, X509StoreContextRef, X509VerifyResult};
 use rand::RngCore;
 use tokio::net::TcpStream;
 use tonic::body::BoxBody;
@@ -47,11 +48,12 @@ use crate::identity::{self, Identity};
 
 use super::Error;
 
-pub use boring::asn1::Asn1TimeRef;
-pub use boring::error::ErrorStack;
-pub use boring::ssl::{ConnectConfiguration, SslAcceptor};
-pub use boring::x509::X509;
-pub use tokio_boring::{connect, HandshakeError, SslStream};
+pub use openssl::asn1::Asn1TimeRef;
+pub use openssl::error::ErrorStack;
+pub use openssl::ssl::{ConnectConfiguration, SslAcceptor};
+pub use openssl::x509::X509;
+pub use tokio_openssl::SslStream;
+// pub use openssl::error::HandshakeError;
 
 pub fn asn1_time_to_system_time(time: &Asn1TimeRef) -> SystemTime {
     let unix_time = Asn1Time::from_unix(0).unwrap().diff(time).unwrap();
@@ -207,7 +209,7 @@ impl Certs {
 #[derive(Clone, Debug)]
 pub struct TlsGrpcChannel {
     uri: Uri,
-    client: hyper::Client<hyper_boring::HttpsConnector<hyper::client::HttpConnector>, BoxBody>,
+    client: hyper::Client<hyper_openssl::HttpsConnector<hyper::client::HttpConnector>, BoxBody>,
 }
 
 /// grpc_connector provides a client TLS channel for gRPC requests.
@@ -233,7 +235,7 @@ pub fn grpc_connector(uri: String, root_cert: RootCert) -> Result<TlsGrpcChannel
     }
     let mut http = hyper::client::HttpConnector::new();
     http.enforce_http(false);
-    let mut https = hyper_boring::HttpsConnector::with_connector(http, conn)?;
+    let mut https = hyper_openssl::HttpsConnector::with_connector(http, conn)?;
     https.set_callback(move |cc, _| {
         if is_localhost_call {
             // Follow Istio logic to allow localhost calls: https://github.com/istio/istio/blob/373fc89518c986c9f48ed3cd891930da6fdc8628/pkg/istio-agent/xds_proxy.go#L735
@@ -296,6 +298,16 @@ impl Certs {
     }
 
     fn setup_ctx(&self, conn: &mut SslContextBuilder) -> Result<(), Error> {
+        
+        {
+            // info!("Number: '{}'", number());
+            info!("Version: '{}'", version());
+            // info!("C flags: '{}'", c_flags());
+            // info!("Built on: '{}'", built_on());
+            // info!("Platform: '{}'", platform());
+            // info!("Dir: '{}'", dir());
+        }
+
         // general TLS options
         conn.set_alpn_protos(Alpn::H2.encode())?;
         conn.set_min_proto_version(Some(ssl::SslVersion::TLS1_3))?;
@@ -315,7 +327,7 @@ impl Certs {
         }
         conn.check_private_key()?;
 
-        // by default, allow boringssl to do standard validation
+        // by default, allow OpenSSL to do standard validation
         conn.set_verify_callback(Self::verify_mode(), Verifier::None.callback());
 
         Ok(())
@@ -347,13 +359,15 @@ impl Verifier {
         // internally, openssl tends to .expect the results of these methods.
         // TODO bubble up better error message
         let ssl_idx = X509StoreContext::ssl_idx().map_err(Error::SslError)?;
-        let cert = ctx
-            .ex_data(ssl_idx)
-            .ok_or(TlsError::ExDataError)?
-            .peer_certificate()
-            .ok_or(TlsError::PeerCertError)?;
-
-        cert.verify_san(identity)
+        let ctx_idx = ctx.ex_data(ssl_idx).ok_or(TlsError::ExDataError)?;
+        match ctx_idx.peer_certificate() {
+            Some(cert) => cert.verify_san(identity),
+            None => {
+                let chain = ctx_idx.peer_cert_chain().ok_or(TlsError::PeerCertError)?;
+                let cert = chain.get(0).unwrap();
+                cert.verify_san(identity)
+            }
+        }
     }
 
     fn verify(&self, verified: bool, ctx: &mut X509StoreContextRef) -> Result<(), TlsError> {
@@ -394,9 +408,29 @@ pub fn extract_sans(cert: &x509::X509) -> Vec<Identity> {
         .unwrap_or_default()
 }
 
-impl SanChecker for x509::X509 {
+pub fn extract_x509_ref_sans(cert: &X509Ref) -> Vec<Identity> {
+    cert.subject_alt_names()
+        .iter()
+        .flat_map(|sans| sans.iter())
+        .filter_map(|s| s.uri())
+        .map(Identity::from_str)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default()
+}
+
+impl SanChecker for X509 {
     fn verify_san(&self, identity: &Identity) -> Result<(), TlsError> {
         let sans = extract_sans(self);
+        sans.iter()
+            .find(|id| id == &identity)
+            .ok_or_else(|| TlsError::SanError(identity.to_owned(), sans.clone()))
+            .map(|_| ())
+    }
+}
+
+impl SanChecker for X509Ref {
+    fn verify_san(&self, identity: &Identity) -> Result<(), TlsError> {
+        let sans = extract_x509_ref_sans(self);
         sans.iter()
             .find(|id| id == &identity)
             .ok_or_else(|| TlsError::SanError(identity.to_owned(), sans.clone()))
@@ -461,9 +495,21 @@ pub struct TlsAcceptor<F: CertProvider> {
 }
 
 #[derive(thiserror::Error, Debug)]
+pub enum HandshakeError<S> {
+    #[error("invalid operation: {1:?}")]
+    Ssl(S, ErrorStack),
+    #[error("create stream error: {0:?}")]
+    Create(ErrorStack),
+    #[error("accept error: {1}")]
+    Accept(SslStream<S>, openssl::ssl::Error),
+    #[error("connect error: {1}")]
+    Connect(SslStream<S>, openssl::ssl::Error),
+}
+
+#[derive(thiserror::Error, Debug)]
 pub enum TlsError {
     #[error("tls handshake error: {0:?}")]
-    Handshake(#[from] tokio_boring::HandshakeError<TcpStream>),
+    Handshake(#[from] HandshakeError<TcpStream>),
     #[error("tls verification error: {0}")]
     Verification(X509VerifyResult),
     #[error("certificate lookup error: {0} is not a known destination")]
@@ -484,7 +530,7 @@ impl<F> tls_listener::AsyncTls<AddrStream> for TlsAcceptor<F>
 where
     F: CertProvider + Clone + 'static,
 {
-    type Stream = tokio_boring::SslStream<TcpStream>;
+    type Stream = tokio_openssl::SslStream<TcpStream>;
     type Error = TlsError;
     type AcceptFuture = Pin<Box<dyn Future<Output = Result<Self::Stream, Self::Error>> + Send>>;
 
@@ -493,10 +539,39 @@ where
         let mut acceptor = self.acceptor.clone();
         Box::pin(async move {
             let tls = acceptor.fetch_cert(&inner).await?;
-            tokio_boring::accept(&tls, inner)
-                .await
-                .map_err(TlsError::Handshake)
+            let ssl = match Ssl::new(tls.context()) {
+                Ok(ssl) => ssl,
+                Err(e) => return Err(TlsError::Handshake(HandshakeError::Ssl(inner, e))),
+            };
+            let mut stream = match tokio_openssl::SslStream::new(ssl, inner) {
+                Ok(stream) => stream,
+                Err(e) => return Err(TlsError::Handshake(HandshakeError::Create(e))),
+            };
+            match Pin::new(&mut stream).accept().await {
+                Ok(()) => Ok(stream),
+                // Err(e) => Ok(stream), zkf for debug
+                Err(e) => Err(TlsError::Handshake(HandshakeError::Accept(stream, e))),
+            }
         })
+    }
+}
+
+pub async fn connect(
+    config: ConnectConfiguration,
+    domain: &str,
+    stream: TcpStream,
+) -> Result<SslStream<TcpStream>, HandshakeError<TcpStream>> {
+    let ssl = match config.into_ssl(domain) {
+        Ok(ssl) => ssl,
+        Err(e) => return Err(HandshakeError::Ssl(stream, e)),
+    };
+    let mut stream = match tokio_openssl::SslStream::new(ssl, stream) {
+        Ok(stream) => stream,
+        Err(e) => return Err(HandshakeError::Create(e)),
+    };
+    match Pin::new(&mut stream).connect().await {
+        Ok(()) => Ok(stream),
+        Err(e) => Err(HandshakeError::Connect(stream, e)),
     }
 }
 
@@ -569,7 +644,7 @@ fn generate_test_certs_at(
     };
     builder.set_serial_number(&serial_number).unwrap();
 
-    let mut names = boring::x509::X509NameBuilder::new().unwrap();
+    let mut names = openssl::x509::X509NameBuilder::new().unwrap();
     names.append_entry_by_text("O", "cluster.local").unwrap();
     let names = names.build();
     builder.set_issuer_name(&names).unwrap();
